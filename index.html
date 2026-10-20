@@ -499,7 +499,7 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
   </section>
 </main>
 
-<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.20-privada</span></footer>
+<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.20-b</span></footer>
 
 <!-- ================= DIALOGS ================= -->
 <dialog id="dlgMember">
@@ -1192,7 +1192,7 @@ function openPayment(id, memberId){
   f.elements.montoBs.value=p? p.montoBs : (num(f.elements.tasa.value)? round2(num(f.elements.montoUSD.value)*num(f.elements.tasa.value)) : '');
   f.elements.referencia.value=p?.referencia||'';
   f.elements.notas.value=p?.notas||'';
-  if(p){ f.elements.desde.value=p.desde||p.fecha; desdeTouched=true; } else refreshDesde();
+  if(p){ f.elements.desde.value=p.desde||p.fecha; desdeTouched=!!p.desdeManual; } else refreshDesde();
   updatePayPreview();
   $('#dlgPayment').showModal();
 }
@@ -1295,7 +1295,8 @@ function openHistory(id){
       <div><b class="gold">${fmtUSD(i.totalUSD)}</b><span>${i.pays.length} pago(s) · total aportado</span></div>
     </div>
     <p class="small muted">📞 ${esc(fmtPhone(m.telefono))}${m.alias?' · @'+esc(m.alias):''} · Miembro desde ${fmtDate(m.inicio)}${m.fechaBaja&&!m.activo?' · Baja: '+fmtDate(m.fechaBaja):''}${m.notas?'<br>📝 '+esc(m.notas):''}</p>
-    <div class="list">${i.pays.length?i.pays.map(p=>`<div class="li"><div class="info"><b>${fmtDate(p.fecha)} · Ref. ${esc(p.referencia||'—')}</b><span>${p.meses} mes(es): ${fmtDate(p.desde||p.fecha)} → ${fmtDate(paymentHasta(p))}${p.notas?' · '+esc(p.notas):''}</span></div><div class="right"><b class="gold">${fmtUSD(p.montoUSD)}</b><div class="small muted">${fmtBs(p.montoBs)}</div></div></div>`).join(''):'<div class="empty">Sin pagos registrados.</div>'}</div>`;
+    <div class="list">${i.pays.length?i.pays.map(p=>`<div class="li"><div class="info"><b>${fmtDate(p.fecha)} · Ref. ${esc(p.referencia||'—')}</b><span>${p.meses} mes(es): ${fmtDate(p.desde||p.fecha)} → ${fmtDate(paymentHasta(p))}${p.notas?' · '+esc(p.notas):''}</span></div><div class="right"><b class="gold">${fmtUSD(p.montoUSD)}</b><div class="small muted">${fmtBs(p.montoBs)}</div></div>
+      <div class="acts" style="flex-wrap:nowrap"><button class="btn sm icon" data-act="editPay" data-id="${p.id}" title="Editar pago">✏️</button><button class="btn sm icon danger" data-act="delPay" data-id="${p.id}" title="Eliminar pago">🗑</button></div></div>`).join(''):'<div class="empty">Sin pagos registrados.</div>'}</div>`;
   $('#histFoot').innerHTML=`<a class="btn wa" target="_blank" rel="noopener" href="${waLink(m.telefono,reminderMsg(m))}">💬 WhatsApp</a>${m.activo?`<button class="btn primary" onclick="document.getElementById('dlgHistory').close();openPayment(null,'${m.id}')">💳 Registrar pago</button>`:''}`;
   $('#dlgHistory').showModal();
 }
@@ -1328,8 +1329,8 @@ document.addEventListener('click',e=>{
       if(confirm(`¿ELIMINAR definitivamente a ${m.nombre}${n?` y sus ${n} pago(s)? Esto afectará los ingresos históricos.\n\nSugerencia: usa "Dar de baja" para conservar el historial.`:'?'}`)){
         DB.members=DB.members.filter(x=>x.id!==id); DB.payments=DB.payments.filter(p=>p.memberId!==id); commit(); toast('🗑 Miembro eliminado');
       } break; }
-    case 'editPay': openPayment(id); break;
-    case 'delPay': { const p=DB.payments.find(x=>x.id===id); if(confirm(`¿Eliminar el pago Ref. ${p.referencia} del ${fmtDate(p.fecha)}?`)){ DB.payments=DB.payments.filter(x=>x.id!==id); recalcCoverage(p.memberId); commit(); toast('🗑 Pago eliminado'); } break; }
+    case 'editPay': if($('#dlgHistory').open) $('#dlgHistory').close(); openPayment(id); break;
+    case 'delPay': { const p=DB.payments.find(x=>x.id===id); if($('#dlgHistory').open) $('#dlgHistory').close(); if(confirm(`¿Eliminar el pago Ref. ${p.referencia} del ${fmtDate(p.fecha)}?`)){ DB.payments=DB.payments.filter(x=>x.id!==id); recalcCoverage(p.memberId); commit(); toast('🗑 Pago eliminado'); } break; }
     case 'editExp': openExpense(id); break;
     case 'delExp': { const x=DB.expenses.find(e=>e.id===id); if(confirm(`¿Eliminar el gasto "${x.concepto}"?`)){ DB.expenses=DB.expenses.filter(e=>e.id!==id); commit(); toast('🗑 Gasto eliminado'); } break; }
     case 'copyRem': copyText(reminderMsg(m)); markReminded(id); break;

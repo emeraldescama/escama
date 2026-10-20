@@ -209,6 +209,13 @@ dialog .df{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;borde
 .check{display:flex;gap:8px;align-items:center;font-size:.88rem;color:var(--muted);margin-bottom:10px;cursor:pointer}
 .check input{width:18px;height:18px;accent-color:var(--em)}
 
+/* ---------- Sync ---------- */
+.sync{cursor:pointer;padding:7px 12px;font-weight:600;font-size:.82rem}
+.sync.ok{color:var(--em2);border-color:rgba(16,185,129,.45)}
+.sync.warn{color:var(--amber);border-color:rgba(251,191,36,.45)}
+.sync.err{color:var(--red);border-color:rgba(248,113,113,.45)}
+.sync.busy{color:var(--gold2)}
+
 /* ---------- Tasa BCV ---------- */
 .rate-btn{background:var(--panel2);border:1px solid var(--line2);border-radius:999px;width:30px;height:30px;display:grid;place-items:center;cursor:pointer;padding:0;flex:none}
 .rate-btn:hover{border-color:var(--gold)}
@@ -273,6 +280,7 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
           <span class="rate-info" id="rateInfo"></span>
           <button class="rate-btn" id="btnRate" type="button" title="Actualizar tasa desde bcv.org.ve"><span>🔄</span></button>
         </div>
+        <button type="button" class="chip-rate sync" id="syncChip" hidden></button>
         <span class="chip-rate" style="padding-right:12px" id="todayChip"></span>
       </div>
     </div>
@@ -458,6 +466,10 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
         <button class="btn primary" type="submit">💾 Guardar ajustes</button>
       </form>
       <div class="panel">
+        <h3>☁️ Sincronización entre dispositivos</h3>
+        <div id="cloudPanel"></div>
+      </div>
+      <div class="panel">
         <h3>🗄️ Persistencia e histórico</h3>
         <p class="muted small" style="margin-top:0">Todos los datos se guardan automáticamente en este navegador (<code>localStorage</code>). Exporta un respaldo <b>datos_escama.json</b> con regularidad para no perder el histórico si cambias de equipo o limpias el navegador.</p>
         <div class="mini" id="dataStats"></div>
@@ -587,6 +599,19 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
   <div class="df"><button class="btn ghost" onclick="this.closest('dialog').close()">Cancelar</button><button class="btn primary" id="ocrImport">Importar seleccionados</button></div>
 </dialog>
 
+<dialog id="dlgPin">
+  <form method="dialog" id="formPin">
+    <div class="dh"><h3>🔑 PIN de administrador</h3><button class="x" value="cancel" formnovalidate>×</button></div>
+    <div class="db">
+      <p class="muted small" id="pinMsg" style="margin-top:0"></p>
+      <label class="f"><span>PIN</span><input type="password" name="pin" autocomplete="current-password" required></label>
+      <div class="warn" id="pinErr" hidden></div>
+      <label class="check"><input type="checkbox" name="remember" checked> Recordar el PIN en este equipo</label>
+    </div>
+    <div class="df"><button class="btn ghost" value="cancel" formnovalidate>Cancelar</button><button class="btn primary" value="ok">Entrar</button></div>
+  </form>
+</dialog>
+
 <div id="toasts"></div>
 
 <script>
@@ -690,11 +715,20 @@ function normalize(d){
   out.members.forEach(m=>{ if(m.activo===undefined) m.activo=true; });
   return out;
 }
-function save(){
+function saveLocal(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); }
   catch(e){ toast('⚠️ No se pudo guardar en el navegador. Exporta un respaldo JSON.', null, true); }
 }
-function commit(){ save(); renderAll(); }
+// Guarda en el navegador y, si hay nube + PIN, programa la subida al servidor
+function save(){
+  saveLocal();
+  if(cloud.available && cloud.pin){ cloud.dirty=true; saveCloudMeta(); schedulePush(); }
+}
+// Cambio hecho por el usuario: en la nube sin PIN se pide el PIN (o se descarta)
+function commit(){
+  save(); renderAll();
+  if(cloud.available && !cloud.pin) askPinForChange();
+}
 
 /* ---------- Helpers ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1077,6 +1111,7 @@ function renderSettings(){
     f.elements.autoTasa.checked=DB.settings.autoTasa!==false;
   }
   renderRate();
+  renderCloud();
   $('#dataStats').innerHTML=[[DB.members.length,'Miembros'],[DB.payments.length,'Pagos'],[DB.expenses.length,'Gastos'],[(new Blob([JSON.stringify(DB)]).size/1024).toFixed(1)+' KB','Tamaño']]
     .map(([v,l])=>`<div><b>${v}</b><span>${l}</span></div>`).join('');
   const le=DB.settings.lastExport;
@@ -1620,10 +1655,200 @@ $('#ocrImport').onclick=()=>{
   toast(`📷 Importación lista: ${nuevos} miembro(s) nuevo(s), ${pagos} pago(s)${omitidos?`, ${omitidos} duplicado(s) omitido(s)`:''}.`);
 };
 
+/* =========================================================
+   SINCRONIZACIÓN EN LA NUBE (Vercel + /api/data)
+   Lectura pública; para guardar cambios se requiere el PIN de administrador.
+   ========================================================= */
+const API='/api/data';
+const CLOUD_META=STORAGE_KEY+'_cloud';
+const cloud={enabled:/^https?:$/.test(location.protocol), available:false, state:'local', version:0, updatedAt:null,
+  dirty:false, pin:'', remember:true, inflight:false, again:false, lastServer:null, timer:null, device:''};
+(function loadCloudMeta(){
+  try{
+    const m=JSON.parse(localStorage.getItem(CLOUD_META)||'{}');
+    cloud.version=m.version||0; cloud.dirty=!!m.dirty; cloud.pin=m.pin||''; cloud.remember=m.remember!==false;
+    cloud.device=m.device||('Equipo-'+Math.random().toString(36).slice(2,6).toUpperCase());
+  }catch{ cloud.device='Equipo'; }
+})();
+function saveCloudMeta(){
+  try{ localStorage.setItem(CLOUD_META, JSON.stringify({version:cloud.version, dirty:cloud.dirty, pin:cloud.remember?cloud.pin:'', remember:cloud.remember, device:cloud.device})); }catch{}
+}
+const SYNC_UI={
+  local:['',''], connecting:['☁️ Conectando…','busy'], ok:['☁️ Sincronizado','ok'], saving:['⏳ Guardando…','busy'],
+  readonly:['🔒 Solo lectura','warn'], empty:['☁️ Nube vacía','warn'], nocloud:['⚠️ Nube sin configurar','err'], offline:['⚠️ Sin conexión','err']
+};
+function setSync(st){
+  cloud.state=st;
+  const c=$('#syncChip'), [txt,cls]=SYNC_UI[st]||['',''];
+  c.hidden=!txt; c.className='chip-rate sync '+cls;
+  c.textContent = txt + (st==='offline' && cloud.dirty ? ' · cambios pendientes' : '');
+  c.title = {ok:'Los cambios se guardan en la nube y se ven en todos los dispositivos.', readonly:'Toca para ingresar el PIN y poder editar.',
+    empty:'Aún no hay datos en la nube. Toca para ingresar el PIN y subir los datos de este equipo.', nocloud:'Falta conectar la base de datos en Vercel (ver Ajustes).',
+    offline:'No hay conexión con el servidor; los cambios quedan guardados en este equipo.'}[st]||'';
+  renderCloud();
+}
+function renderCloud(){
+  const el=$('#cloudPanel'); if(!el) return;
+  if(!cloud.enabled){ el.innerHTML=`<p class="muted small" style="margin-top:0">Estás usando el archivo local (abierto desde tu equipo). La sincronización entre dispositivos funciona cuando la app está publicada en Vercel con la base de datos conectada.</p>`; return; }
+  const when=cloud.updatedAt?new Date(cloud.updatedAt).toLocaleString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+  const [txt]=SYNC_UI[cloud.state]||['—'];
+  el.innerHTML=`<div class="mini">
+      <div><b style="font-size:1rem">${txt||'—'}</b><span>Estado</span></div>
+      <div><b>${cloud.version||0}</b><span>Versión en la nube</span></div>
+      <div><b style="font-size:.95rem">${when}</b><span>Último cambio guardado</span></div>
+    </div>
+    <p class="muted small" style="margin-top:0">${cloud.pin?'🔓 Este equipo tiene permiso de edición: los cambios se guardan para todos.':'🔒 Cualquiera puede ver los datos. Para editar, ingresa el PIN de administrador.'}
+    ${cloud.state==='nocloud'?'<br><span style="color:var(--red)">El servidor responde, pero falta conectar la base de datos (Upstash Redis) o el PIN en Vercel.</span>':''}</p>
+    <div class="toolbar" style="margin:0">
+      ${cloud.pin?'<button class="btn sm" id="cloudLogout">🚪 Olvidar PIN en este equipo</button>':'<button class="btn sm gold" id="cloudLogin">🔑 Ingresar PIN</button>'}
+      <button class="btn sm" id="cloudReload">🔄 Recargar desde la nube</button>
+    </div>`;
+  $('#cloudLogin')&&($('#cloudLogin').onclick=()=>loginAndSync());
+  $('#cloudLogout')&&($('#cloudLogout').onclick=()=>{ if(!confirm('¿Olvidar el PIN en este equipo? Quedará en modo solo lectura.')) return; cloud.pin=''; saveCloudMeta(); setSync(cloud.available?(cloud.lastServer?'readonly':'empty'):cloud.state); });
+  $('#cloudReload').onclick=async()=>{ if(cloud.dirty && !confirm('Hay cambios de este equipo sin subir. ¿Descartarlos y cargar lo que hay en la nube?')) return; cloud.dirty=false; saveCloudMeta(); await cloudInit(); toast('🔄 Datos recargados desde la nube'); };
+}
+async function api(method, {query='', body}={}){
+  const headers={}; if(cloud.pin) headers['x-admin-pin']=cloud.pin;
+  if(body) headers['Content-Type']='application/json';
+  return fetch(API+query,{method, headers, body:body?JSON.stringify(body):undefined, cache:'no-store'});
+}
+function applyServerDoc(doc){
+  cloud.lastServer=doc; cloud.version=doc.version||0; cloud.updatedAt=doc.updatedAt||null;
+  if(doc.data){ DB=normalize(JSON.parse(JSON.stringify(doc.data))); saveLocal(); }
+  cloud.dirty=false; saveCloudMeta(); renderAll();
+}
+async function cloudInit(){
+  if(!cloud.enabled){ setSync('local'); return; }
+  setSync('connecting');
+  try{
+    const r=await api('GET');
+    if(r.status===404){ cloud.available=false; setSync('local'); return; }
+    if(r.status===503){ cloud.available=false; setSync('nocloud'); return; }
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const doc=await r.json(); cloud.available=true;
+    if(!doc.data){
+      cloud.lastServer=null; cloud.version=0; cloud.updatedAt=null;
+      if(cloud.pin && (DB.members.length||DB.payments.length)){ cloud.dirty=true; saveCloudMeta(); schedulePush(0); }
+      setSync(cloud.pin?'ok':'empty'); return;
+    }
+    if(cloud.dirty && cloud.pin && Number(cloud.version)===Number(doc.version)){ cloud.lastServer=doc; cloud.updatedAt=doc.updatedAt; schedulePush(0); }
+    else applyServerDoc(doc);
+    setSync(cloud.pin?'ok':'readonly');
+  }catch(e){ cloud.available=false; setSync('offline'); }
+}
+// Fusión a 3 vías por registro (id): base = última versión sincronizada, local = este equipo, remote = nube
+function merge3(base, local, remote){
+  const out=JSON.parse(JSON.stringify(remote));
+  for(const k of ['members','payments','expenses']){
+    const bm=new Map((base[k]||[]).map(x=>[x.id,JSON.stringify(x)]));
+    const lm=new Map((local[k]||[]).map(x=>[x.id,x]));
+    let arr=out[k]||[];
+    for(const id of bm.keys()) if(!lm.has(id)) arr=arr.filter(x=>x.id!==id);          // borrados aquí
+    for(const [id,x] of lm){ if(bm.get(id)!==JSON.stringify(x)){                      // nuevos o editados aquí
+      const i=arr.findIndex(y=>y.id===id); if(i>=0) arr[i]=x; else arr.push(x); } }
+    out[k]=arr;
+  }
+  const bs=base.settings||{}, ls=local.settings||{}; out.settings={...(out.settings||{})};
+  for(const key of Object.keys(ls)) if(JSON.stringify(ls[key])!==JSON.stringify(bs[key])) out.settings[key]=ls[key];
+  return out;
+}
+function schedulePush(ms=700){ clearTimeout(cloud.timer); cloud.timer=setTimeout(pushNow, ms); }
+async function pushNow(){
+  if(!cloud.available || !cloud.pin || !cloud.dirty) return;
+  if(cloud.inflight){ cloud.again=true; return; }
+  cloud.inflight=true; setSync('saving');
+  const snapshot=JSON.parse(JSON.stringify(DB));
+  try{
+    const r=await api('PUT',{body:{data:snapshot, baseVersion:cloud.version, device:cloud.device}});
+    if(r.status===401){ cloud.pin=''; saveCloudMeta(); setSync('readonly'); toast('🔑 El PIN guardado ya no es válido. Ingrésalo de nuevo.',null,true); askPinForChange(); return; }
+    if(r.status===409){
+      const cur=await r.json(); cloud.again=false;
+      if(cloud.lastServer?.data && cur.data){
+        // Combina: aplica los cambios de este equipo sobre la versión más reciente de la nube
+        DB=normalize(merge3(cloud.lastServer.data, JSON.parse(JSON.stringify(DB)), cur.data));
+        cloud.lastServer=cur; cloud.version=cur.version; cloud.updatedAt=cur.updatedAt;
+        saveLocal(); cloud.dirty=true; saveCloudMeta(); renderAll(); schedulePush(0);
+        toast('🔀 Otro dispositivo guardó cambios al mismo tiempo: se combinaron con los tuyos.');
+      } else {
+        applyServerDoc(cur); setSync('ok');
+        toast('⚠️ Otro dispositivo guardó cambios al mismo tiempo. Se cargó la versión más reciente: revisa y repite tu último cambio si no aparece.',null,true);
+      }
+      return;
+    }
+    if(r.status===503){ setSync('nocloud'); toast('⚠️ Falta configurar el PIN o la base de datos en Vercel.',null,true); return; }
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    cloud.version=j.version; cloud.updatedAt=j.updatedAt; cloud.lastServer={data:snapshot, version:j.version, updatedAt:j.updatedAt};
+    if(!cloud.again) cloud.dirty=false;
+    saveCloudMeta(); setSync('ok');
+  }catch(e){ setSync('offline'); }
+  finally{ cloud.inflight=false; if(cloud.again){ cloud.again=false; cloud.dirty=true; schedulePush(200); } }
+}
+async function cloudPoll(){
+  if(!cloud.enabled) return;
+  if(!cloud.available){ if(['offline','connecting'].includes(cloud.state)) await cloudInit(); return; }
+  if(cloud.inflight || document.hidden) return;
+  if(cloud.dirty && cloud.pin) return pushNow();
+  try{
+    const r=await api('GET',{query:'?meta=1'}); if(!r.ok) throw new Error();
+    const m=await r.json();
+    if(Number(m.version)>Number(cloud.version)){
+      const r2=await api('GET'); applyServerDoc(await r2.json());
+      toast('🔄 Datos actualizados con cambios de otro dispositivo');
+    }
+    if(cloud.state==='offline'||cloud.state==='connecting') setSync(cloud.pin?'ok':(cloud.lastServer?'readonly':'empty'));
+  }catch{ setSync('offline'); }
+}
+/* ---- PIN ---- */
+let pinPromise=null, pinResolve=null;
+function requirePin(msg){
+  if(pinPromise) return pinPromise;
+  const f=$('#formPin'); f.reset(); f.elements.remember.checked=cloud.remember;
+  $('#pinMsg').textContent=msg||'Ingresa el PIN de administrador para poder editar los datos compartidos.';
+  $('#pinErr').hidden=true; $('#dlgPin').returnValue='';
+  pinPromise=new Promise(res=>pinResolve=res);
+  $('#dlgPin').showModal(); setTimeout(()=>f.elements.pin.focus(),50);
+  return pinPromise;
+}
+$('#formPin').addEventListener('submit', async e=>{
+  if(e.submitter?.value!=='ok') return;
+  e.preventDefault();
+  const pin=e.target.elements.pin.value.trim(); const err=$('#pinErr');
+  try{
+    const r=await fetch(API+'?auth=1',{headers:{'x-admin-pin':pin},cache:'no-store'});
+    if(r.ok){ cloud.pin=pin; cloud.remember=e.target.elements.remember.checked; saveCloudMeta(); $('#dlgPin').close('ok'); return; }
+    err.hidden=false; err.textContent = r.status===503 ? '⚠️ En Vercel falta configurar la variable ADMIN_PIN o la base de datos.' : '❌ PIN incorrecto.';
+  }catch{ err.hidden=false; err.textContent='⚠️ Sin conexión con el servidor.'; }
+});
+$('#dlgPin').addEventListener('close',()=>{
+  const ok=$('#dlgPin').returnValue==='ok' && !!cloud.pin; const r=pinResolve; pinPromise=null; pinResolve=null; r&&r(ok);
+});
+async function askPinForChange(){
+  const ok=await requirePin('Estos datos son compartidos. Para guardar tu cambio en la nube ingresa el PIN de administrador.');
+  if(ok){ cloud.dirty=true; saveCloudMeta(); setSync('ok'); schedulePush(0); }
+  else if(cloud.lastServer){ applyServerDoc(cloud.lastServer); setSync('readonly'); toast('🔒 Cambio descartado: se necesita el PIN para modificar los datos compartidos.',null,true); }
+  else setSync('empty');
+}
+async function loginAndSync(){
+  const ok=await requirePin();
+  if(!ok) return;
+  if(!cloud.lastServer && (DB.members.length||DB.payments.length)){ cloud.dirty=true; saveCloudMeta(); schedulePush(0); }
+  setSync('ok'); toast('🔓 Listo: este equipo ya puede editar y sus cambios se verán en todos los dispositivos.');
+}
+$('#syncChip').onclick=()=>{
+  if(['readonly','empty'].includes(cloud.state)) loginAndSync();
+  else if(cloud.state==='offline') cloudPoll();
+  else switchTab('settings');
+};
+
 /* ---------- Init ---------- */
 try{ const t=localStorage.getItem(STORAGE_KEY+'_tab'); if(t && $('#tab-'+t)) switchTab(t); }catch{}
 renderAll();
-if(DB.settings.autoTasa!==false && rateIsStale()) updateRate(true);
+cloudInit().finally(()=>{ if(DB.settings.autoTasa!==false && rateIsStale()) updateRate(true); });
+setInterval(cloudPoll, 20000);
+window.addEventListener('focus', cloudPoll);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) cloudPoll(); });
+window.addEventListener('beforeunload', e=>{ if(cloud.dirty && cloud.available){ e.preventDefault(); e.returnValue=''; } });
 setInterval(()=>{ if(DB.settings.autoTasa!==false && rateIsStale()) updateRate(true); }, 15*60*1000);
 // Refresh statuses when the day changes (app left open)
 let lastDay=today(); setInterval(()=>{ if(today()!==lastDay){ lastDay=today(); renderAll(); } },60000);

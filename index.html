@@ -1817,7 +1817,11 @@ $('#formPin').addEventListener('submit', async e=>{
   try{
     const r=await fetch(API+'?auth=1',{headers:{'x-admin-pin':pin},cache:'no-store'});
     if(r.ok){ cloud.pin=pin; cloud.remember=e.target.elements.remember.checked; saveCloudMeta(); $('#dlgPin').close('ok'); return; }
-    err.hidden=false; err.textContent = r.status===503 ? '⚠️ En Vercel falta configurar la variable ADMIN_PIN o la base de datos.' : '❌ PIN incorrecto.';
+    const j=await r.json().catch(()=>({}));
+    err.hidden=false;
+    err.textContent = j.error==='pin_not_configured' ? '⚠️ El servidor no encuentra la variable ADMIN_PIN. Revisa en Vercel que se llame exactamente ADMIN_PIN, que esté marcada para "Production" y vuelve a desplegar (Redeploy).'
+      : j.error==='storage_not_configured' ? '⚠️ El servidor no encuentra la base de datos. Conecta Upstash Redis al proyecto y vuelve a desplegar.'
+      : r.status===401 ? '❌ PIN incorrecto.' : '⚠️ Error del servidor ('+r.status+').';
   }catch{ err.hidden=false; err.textContent='⚠️ Sin conexión con el servidor.'; }
 });
 $('#dlgPin').addEventListener('close',()=>{

@@ -238,7 +238,7 @@ dialog .df{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;borde
 table.ocr td,table.ocr th{padding:6px}
 table.ocr input[type=text],table.ocr input[type=tel],table.ocr input[type=date],table.ocr input[type=number]{padding:6px 8px;font-size:.86rem}
 table.ocr .tag{font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:99px;white-space:nowrap}
-.tag.new{background:var(--okbg);color:var(--em2)} .tag.old{background:rgba(245,197,66,.12);color:var(--gold2)} .tag.dup{background:var(--redbg);color:var(--red)}
+.tag.new{background:var(--okbg);color:var(--em2)} .tag.upd{background:var(--amberbg);color:var(--amber)} .tag.reg{background:var(--graybg);color:var(--muted)} .tag.old{background:rgba(245,197,66,.12);color:var(--gold2)} .tag.dup{background:var(--redbg);color:var(--red)}
 details.raw summary{cursor:pointer;color:var(--muted);font-size:.85rem}
 details.raw pre{white-space:pre-wrap;font-size:.78rem;background:var(--bg2);padding:10px;border-radius:10px;max-height:220px;overflow:auto}
 @media (max-width:820px){ table.ocr td{display:block !important;text-align:left !important} table.ocr td::before{float:none !important;display:block} }
@@ -1556,16 +1556,34 @@ function addOcrRows(list){
     ocrRows.push({id:uid(), sel:true, nombre:r.nombre, telefono:r.telefono||'', fecha:r.fecha||'', meses:me,
       usd: r.usd!=null&&r.usd!=='' ? round2(num(r.usd)) : round2(usd*me), ref:r.ref||'',
       alias:r.alias||'', inicio:r.inicio||'', bs:r.bs??null, tasa:r.tasa??null, notas:r.notas||'', sinPago:!!r.sinPago, src:r.src||'captura'});
+    const row=ocrRows[ocrRows.length-1];
+    if(['reg','upd'].includes(ocrRowState(row)[0]) && row.fecha) row.sel=false;   // ya registrado: no se importa salvo que lo marques
   });
   renderOcr();
+}
+// Recalcula la cobertura de un miembro en orden cronológico (cada pago empieza donde terminó el anterior)
+function recalcCoverage(memberId){
+  let venc=null;
+  DB.payments.filter(p=>p.memberId===memberId).sort((a,b)=>a.fecha.localeCompare(b.fecha)||String(a.creado||'').localeCompare(String(b.creado||'')))
+    .forEach(p=>{ p.desde = venc && venc>p.fecha ? venc : p.fecha; venc=addMonths(p.desde, p.meses||1); });
+}
+// Un pago ya registrado: misma referencia, o del mismo miembro con ±3 días de diferencia
+const DUP_DAYS=3;
+function findDupPayment(memberId, r){
+  const ref=String(r.ref||'').trim();
+  return DB.payments.find(p=>p.memberId===memberId && ((ref && String(p.referencia||'').trim()===ref) || (r.fecha && Math.abs(daysBetween(p.fecha, r.fecha))<=DUP_DAYS)));
 }
 function ocrRowState(r){
   if(!r.fecha) return ['dup','⚠ Falta la fecha'];
   const m=findExisting(r);
   const pago=$('#ocrMode').value==='pago' && !r.sinPago;
-  if(m && pago && DB.payments.some(p=>p.memberId===m.id && p.fecha===r.fecha)) return ['dup','Ya tiene pago ese día'];
+  if(m && pago){
+    const d=findDupPayment(m.id, r);
+    if(d) return d.fecha===r.fecha && num(d.montoUSD)===num(r.usd) && Number(d.meses)===Number(r.meses)
+      ? ['reg','✔ Ya registrado'] : ['upd',`Ya hay pago del ${fmtDate(d.fecha)} · márcalo para corregirlo`];
+  }
   if(r.sinPago) return m ? ['old','Existe (sin pago)'] : ['new','Nuevo (sin pago)'];
-  return m ? ['old','Existe: '+m.nombre] : ['new','Nuevo miembro'];
+  return m ? ['old',m.nombre+' · pago nuevo'] : ['new','Nuevo miembro'];
 }
 function renderOcr(){
   const pago=$('#ocrMode').value==='pago';
@@ -1779,7 +1797,7 @@ $('#btnTpl').onclick=downloadTemplate;
 
 $('#ocrImport').onclick=()=>{
   const pago=$('#ocrMode').value==='pago'; const tasa=num(DB.settings.tasa);
-  let nuevos=0, pagos=0, omitidos=0;
+  let nuevos=0, pagos=0, omitidos=0, actualizados=0; const tocados=new Set();
   const sinFecha=ocrRows.filter(r=>r.sel && r.nombre.trim() && !r.fecha).length;
   if(sinFecha){ toast(`⚠ ${sinFecha} fila(s) seleccionada(s) no tienen fecha. Complétalas o desmárcalas.`,null,true); return; }
   [...ocrRows].filter(r=>r.sel && r.nombre.trim()).sort((a,b)=>a.fecha.localeCompare(b.fecha)).forEach(r=>{
@@ -1789,17 +1807,24 @@ $('#ocrImport').onclick=()=>{
     if(!m){ m={id:uid(), nombre:r.nombre.trim(), telefono:r.telefono.trim(), alias:(r.alias||'').replace(/^@/,''), inicio, notas:r.notas||origen, activo:true, creado:new Date().toISOString()}; DB.members.push(m); nuevos++; }
     else { if(!m.telefono && r.telefono) m.telefono=r.telefono; if(!m.alias && r.alias) m.alias=r.alias.replace(/^@/,''); if(inicio < m.inicio) m.inicio=inicio; }
     if(pago && !r.sinPago){
-      if(DB.payments.some(p=>p.memberId===m.id && p.fecha===r.fecha)){ omitidos++; return; }
       const t = num(r.tasa) || tasa;
       const usd = round2(num(r.usd)), bs = r.bs!=null && r.bs!=='' ? round2(num(r.bs)) : round2(usd*t);
-      DB.payments.push({id:uid(), memberId:m.id, fecha:r.fecha, meses:r.meses, tasa:t, montoUSD:usd, montoBs:bs, referencia:String(r.ref||'').trim(),
-        desde:suggestDesde(m.id, r.fecha), notas:origen, creado:new Date().toISOString()});
-      pagos++;
+      const ref = String(r.ref||'').trim();
+      const d = findDupPayment(m.id, r);
+      if(d){  // ya existe: se corrige ese pago en lugar de duplicarlo
+        Object.assign(d,{fecha:r.fecha, meses:r.meses, tasa:t, montoUSD:usd, montoBs:bs, referencia:ref||d.referencia, notas:r.notas||d.notas});
+        tocados.add(m.id); actualizados++; return;
+      }
+      DB.payments.push({id:uid(), memberId:m.id, fecha:r.fecha, meses:r.meses, tasa:t, montoUSD:usd, montoBs:bs, referencia:ref,
+        desde:suggestDesde(m.id, r.fecha), notas:r.notas||origen, creado:new Date().toISOString()});
+      tocados.add(m.id); pagos++;
     }
   });
-  ocrRows=ocrRows.filter(r=>!r.sel); commit(); renderOcr();
+  tocados.forEach(recalcCoverage);
+  const yaReg=ocrRows.filter(r=>!r.sel && ['reg','upd'].includes(ocrRowState(r)[0])).length;
+  ocrRows=ocrRows.filter(r=>!r.sel && !['reg','upd'].includes(ocrRowState(r)[0])); commit(); renderOcr();
   if(!ocrRows.length) $('#dlgOcr').close();
-  toast(`📥 Importación lista: ${nuevos} miembro(s) nuevo(s), ${pagos} pago(s)${omitidos?`, ${omitidos} duplicado(s) omitido(s)`:''}.`);
+  toast(`📥 Importación lista: ${nuevos} miembro(s) nuevo(s), ${pagos} pago(s) nuevo(s)${actualizados?`, ${actualizados} pago(s) corregido(s)`:''}${yaReg?` · ${yaReg} ya estaban registrados (no se tocaron)`:''}.`);
 };
 
 /* =========================================================

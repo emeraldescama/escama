@@ -209,6 +209,15 @@ dialog .df{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;borde
 .check{display:flex;gap:8px;align-items:center;font-size:.88rem;color:var(--muted);margin-bottom:10px;cursor:pointer}
 .check input{width:18px;height:18px;accent-color:var(--em)}
 
+/* ---------- Modo sin PIN (solo vista pública) ---------- */
+.pub-only{display:none}
+body.restricted .pub-only{display:block}
+body.restricted .priv,
+body.restricted #tabs button:not([data-tab=members]),
+body.restricted #alertCount{display:none !important}
+.pub-banner{background:var(--amberbg);border:1px solid rgba(251,191,36,.35);color:var(--amber);border-radius:12px;padding:10px 14px;margin-bottom:14px;font-size:.9rem}
+.pub-banner .btn{margin-left:8px}
+
 /* ---------- Sync ---------- */
 .sync{cursor:pointer;padding:7px 12px;font-weight:600;font-size:.82rem}
 .sync.ok{color:var(--em2);border-color:rgba(16,185,129,.45)}
@@ -327,9 +336,11 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
   <section class="tab" id="tab-members">
     <div class="toolbar">
       <h2>Miembros</h2>
-      <button class="btn gold" id="btnOcr">📥 Importar miembros</button>
-      <button class="btn primary" data-open="member">＋ Nuevo miembro</button>
+      <button class="btn gold priv" id="btnOcr">📥 Importar miembros</button>
+      <button class="btn primary priv" data-open="member">＋ Nuevo miembro</button>
     </div>
+    <div class="pub-banner pub-only">🔒 Estás viendo la lista pública de Escama Esmeralda. Los pagos, ingresos, gastos y teléfonos solo son visibles con el PIN de administrador.
+      <button class="btn sm gold" type="button" onclick="loginAndSync()">🔑 Ingresar PIN</button></div>
     <div class="toolbar">
       <div class="search grow">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -339,7 +350,7 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
     </div>
     <div class="tablewrap">
       <table class="resp">
-        <thead><tr><th>Miembro</th><th>Teléfono</th><th>Inicio</th><th>Vence</th><th>Estado</th><th class="right">Aportado</th><th class="right">Acciones</th></tr></thead>
+        <thead><tr><th>Miembro</th><th class="priv">Teléfono</th><th>Inicio</th><th>Vence</th><th>Estado</th><th class="right priv">Aportado</th><th class="right priv">Acciones</th></tr></thead>
         <tbody id="memBody"></tbody>
       </table>
     </div>
@@ -806,7 +817,7 @@ function memberVenc(memberId, excludePayId){
 }
 function memberInfo(m){
   const pays = DB.payments.filter(p=>p.memberId===m.id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
-  const venc = memberVenc(m.id);
+  const venc = (cloud.restricted && m.venc!==undefined) ? (m.venc||null) : memberVenc(m.id);
   const t = today();
   let status, days=null;
   if(venc) days = daysBetween(t, venc);
@@ -1014,12 +1025,12 @@ function renderMembers(){
     const needs=['vencido','porvencer','pendiente'].includes(i.status);
     return `<tr class="${i.status==='baja'?'is-baja':''}">
       <td class="first"><div style="display:flex;gap:10px;align-items:center"><div class="avatar">${esc(initials(m.nombre))}</div><div><div class="name">${esc(m.nombre)}</div>${m.alias?`<div class="alias">@${esc(m.alias)}</div>`:''}</div></div></td>
-      <td data-l="Teléfono" class="nowrap">${esc(fmtPhone(m.telefono))||'<span class="muted">—</span>'}</td>
+      <td data-l="Teléfono" class="nowrap priv">${esc(fmtPhone(m.telefono))||'<span class="muted">—</span>'}</td>
       <td data-l="Inicio" class="nowrap">${fmtDate(m.inicio)}</td>
       <td data-l="Vence" class="nowrap"><b>${fmtDate(i.venc)}</b><div class="small muted">${i.status==='baja'?(m.fechaBaja?'baja '+fmtDate(m.fechaBaja):''):diasText(i.days)}</div></td>
       <td data-l="Estado"><span class="badge ${STATUS[i.status].cls}">${STATUS[i.status].label}</span>${m.ultimoRecordatorio&&needs?`<div class="small muted">avisado ${fmtDate(m.ultimoRecordatorio)}</div>`:''}</td>
-      <td data-l="Aportado" class="right nowrap"><b>${fmtUSD(i.totalUSD)}</b><div class="small muted">${i.totalMeses} mes(es)</div></td>
-      <td class="acts-td"><div class="acts">
+      <td data-l="Aportado" class="right nowrap priv"><b>${fmtUSD(i.totalUSD)}</b><div class="small muted">${i.totalMeses} mes(es)</div></td>
+      <td class="acts-td priv"><div class="acts">
         ${needs&&m.activo?`<a class="btn sm wa" target="_blank" rel="noopener" href="${waLink(m.telefono,reminderMsg(m))}" onclick="markReminded('${m.id}')" title="${i.status==='pendiente'?'Enviar bienvenida':'Enviar recordatorio'} por WhatsApp">💬 ${i.status==='pendiente'?'Bienvenida':'Recordar'}</a>`:''}
         ${m.activo?`<button class="btn sm icon" data-act="pay" data-id="${m.id}" title="Registrar pago">💳</button>`:''}
         <button class="btn sm icon" data-act="hist" data-id="${m.id}" title="Historial de pagos">📜</button>
@@ -1834,7 +1845,7 @@ $('#ocrImport').onclick=()=>{
 const API='/api/data';
 const CLOUD_META=STORAGE_KEY+'_cloud';
 const cloud={enabled:/^https?:$/.test(location.protocol), available:false, state:'local', version:0, updatedAt:null,
-  dirty:false, pin:'', remember:true, inflight:false, again:false, lastServer:null, timer:null, device:''};
+  dirty:false, pin:'', remember:true, inflight:false, again:false, lastServer:null, timer:null, device:'', restricted:false};
 (function loadCloudMeta(){
   try{
     const m=JSON.parse(localStorage.getItem(CLOUD_META)||'{}');
@@ -1876,7 +1887,7 @@ function renderCloud(){
       <button class="btn sm" id="cloudReload">🔄 Recargar desde la nube</button>
     </div>`;
   $('#cloudLogin')&&($('#cloudLogin').onclick=()=>loginAndSync());
-  $('#cloudLogout')&&($('#cloudLogout').onclick=()=>{ if(!confirm('¿Olvidar el PIN en este equipo? Quedará en modo solo lectura.')) return; cloud.pin=''; saveCloudMeta(); setSync(cloud.available?(cloud.lastServer?'readonly':'empty'):cloud.state); });
+  $('#cloudLogout')&&($('#cloudLogout').onclick=()=>{ if(!confirm('¿Olvidar el PIN en este equipo? Solo se verá la lista pública (sin pagos, ingresos ni teléfonos).')) return; cloud.pin=''; cloud.dirty=false; saveCloudMeta(); cloudInit(); });
   $('#cloudReload').onclick=async()=>{ if(cloud.dirty && !confirm('Hay cambios de este equipo sin subir. ¿Descartarlos y cargar lo que hay en la nube?')) return; cloud.dirty=false; saveCloudMeta(); await cloudInit(); toast('🔄 Datos recargados desde la nube'); };
 }
 async function api(method, {query='', body}={}){
@@ -1885,6 +1896,8 @@ async function api(method, {query='', body}={}){
   return fetch(API+query,{method, headers, body:body?JSON.stringify(body):undefined, cache:'no-store'});
 }
 function applyServerDoc(doc){
+  if(doc.pinInvalid && cloud.pin){ cloud.pin=''; toast('🔑 El PIN guardado ya no es válido.',null,true); }
+  setRestricted(!!doc.restricted);
   cloud.lastServer=doc; cloud.version=doc.version||0; cloud.updatedAt=doc.updatedAt||null;
   if(doc.data){ DB=normalize(JSON.parse(JSON.stringify(doc.data))); saveLocal(); }
   cloud.dirty=false; saveCloudMeta(); renderAll();
@@ -1924,6 +1937,20 @@ function merge3(base, local, remote){
   for(const key of Object.keys(ls)) if(JSON.stringify(ls[key])!==JSON.stringify(bs[key])) out.settings[key]=ls[key];
   return out;
 }
+// Lo único que ve quien no tiene PIN: nombre, alias, inicio, estado y vencimiento
+function buildPublic(){
+  const s=DB.settings;
+  return { version:1,
+    settings:{precioUSD:s.precioUSD, diasAviso:s.diasAviso, banco:s.banco, telefonoPago:s.telefonoPago, cedula:s.cedula, grupo:s.grupo,
+      tasa:s.tasa, tasaFuente:s.tasaFuente, tasaFecha:s.tasaFecha, tasaFechaTxt:s.tasaFechaTxt, tasaActualizada:s.tasaActualizada, autoTasa:s.autoTasa},
+    members: DB.members.map(m=>({id:m.id, nombre:m.nombre, alias:m.alias||'', inicio:m.inicio, activo:m.activo!==false, fechaBaja:m.fechaBaja||'', venc:memberVenc(m.id)})),
+    payments:[], expenses:[] };
+}
+function setRestricted(on){
+  cloud.restricted=!!on;
+  document.body.classList.toggle('restricted', cloud.restricted);
+  if(cloud.restricted && !$('#tab-members').classList.contains('active')) switchTab('members');
+}
 function schedulePush(ms=700){ clearTimeout(cloud.timer); cloud.timer=setTimeout(pushNow, ms); }
 async function pushNow(){
   if(!cloud.available || !cloud.pin || !cloud.dirty) return;
@@ -1931,7 +1958,7 @@ async function pushNow(){
   cloud.inflight=true; setSync('saving');
   const snapshot=JSON.parse(JSON.stringify(DB));
   try{
-    const r=await api('PUT',{body:{data:snapshot, baseVersion:cloud.version, device:cloud.device}});
+    const r=await api('PUT',{body:{data:snapshot, public:buildPublic(), baseVersion:cloud.version, device:cloud.device}});
     if(r.status===401){ cloud.pin=''; saveCloudMeta(); setSync('readonly'); toast('🔑 El PIN guardado ya no es válido. Ingrésalo de nuevo.',null,true); askPinForChange(); return; }
     if(r.status===409){
       const cur=await r.json(); cloud.again=false;
@@ -2008,8 +2035,9 @@ async function askPinForChange(){
 async function loginAndSync(){
   const ok=await requirePin();
   if(!ok) return;
-  if(!cloud.lastServer && (DB.members.length||DB.payments.length)){ cloud.dirty=true; saveCloudMeta(); schedulePush(0); }
-  setSync('ok'); toast('🔓 Listo: este equipo ya puede editar y sus cambios se verán en todos los dispositivos.');
+  if(cloud.restricted){ await cloudInit(); }
+  else if(!cloud.lastServer && (DB.members.length||DB.payments.length)){ cloud.dirty=true; saveCloudMeta(); schedulePush(0); }
+  setSync('ok'); toast('🔓 Listo: ya ves toda la información y tus cambios se guardan para todos los dispositivos.');
 }
 $('#syncChip').onclick=()=>{
   if(['readonly','empty'].includes(cloud.state)) loginAndSync();

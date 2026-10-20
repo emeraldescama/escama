@@ -1,5 +1,7 @@
 // API de datos compartidos de Escama Esmeralda (Vercel Serverless Function)
-// GET  /api/data            -> { data, version, updatedAt }   (público)
+// GET  /api/data            -> con PIN: { data, version, updatedAt }
+//                               sin PIN: versión pública (miembros y estado; sin pagos,
+//                               montos, gastos ni teléfonos) con restricted: true
 // GET  /api/data?meta=1     -> { version, updatedAt }          (público, liviano)
 // GET  /api/data?auth=1     -> 200 si el PIN (header x-admin-pin) es correcto
 // PUT  /api/data            -> guarda { data, baseVersion } (requiere x-admin-pin)
@@ -25,6 +27,17 @@ async function redis(s, command) {
   return j.result;
 }
 
+// Respaldo por si la versión guardada aún no trae la vista pública
+function stripPublic(data) {
+  if (!data) return null;
+  return {
+    version: data.version || 1,
+    settings: {},
+    members: (data.members || []).map(m => ({ id: m.id, nombre: m.nombre, alias: m.alias || '', inicio: m.inicio, activo: m.activo !== false })),
+    payments: [], expenses: [],
+  };
+}
+
 function pinOk(req) {
   const pin = process.env.ADMIN_PIN;
   return !!pin && String(req.headers['x-admin-pin'] || '') === String(pin);
@@ -44,7 +57,12 @@ export default async function handler(req, res) {
       const raw = await redis(s, ['GET', KEY]);
       const doc = raw ? JSON.parse(raw) : { data: null, version: 0, updatedAt: null };
       if (req.query.meta !== undefined) return res.status(200).json({ version: doc.version, updatedAt: doc.updatedAt });
-      return res.status(200).json(doc);
+      if (pinOk(req)) return res.status(200).json({ data: doc.data, version: doc.version, updatedAt: doc.updatedAt });
+      return res.status(200).json({
+        data: doc.data ? (doc.public || stripPublic(doc.data)) : null,
+        version: doc.version, updatedAt: doc.updatedAt, restricted: true,
+        pinInvalid: !!req.headers['x-admin-pin'],
+      });
     }
 
     if (req.method === 'PUT') {
@@ -57,10 +75,11 @@ export default async function handler(req, res) {
       const raw = await redis(s, ['GET', KEY]);
       const cur = raw ? JSON.parse(raw) : { data: null, version: 0, updatedAt: null };
       if (Number(body.baseVersion) !== Number(cur.version || 0)) {
-        return res.status(409).json({ error: 'conflict', ...cur });
+        return res.status(409).json({ error: 'conflict', data: cur.data, version: cur.version, updatedAt: cur.updatedAt });
       }
       const doc = {
         data: body.data,
+        public: body.public && Array.isArray(body.public.members) ? body.public : stripPublic(body.data),
         version: (cur.version || 0) + 1,
         updatedAt: new Date().toISOString(),
         device: String(body.device || '').slice(0, 60),

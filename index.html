@@ -838,11 +838,12 @@ function diasText(days){
   if(days===-1) return 'hace 1 día';
   return `hace ${Math.abs(days)} días`;
 }
-function suggestDesde(memberId, fecha, excludePayId){
-  const m = memberById(memberId); if(!m) return fecha;
+// Renovación mensual: cada pago cubre desde su fecha de pago.
+// Solo las cortesías ($0) se suman al final del vencimiento actual.
+function suggestDesde(memberId, fecha, excludePayId, usd){
+  if(num(usd)!==0 || usd===undefined || usd===null || usd==='') return fecha;
   const v = memberVenc(memberId, excludePayId);
-  const ref = v || m.inicio || fecha;
-  return ref > fecha ? ref : fecha;
+  return v && v > fecha ? v : fecha;
 }
 
 /* ---------- Templates ---------- */
@@ -1029,7 +1030,7 @@ function renderMembers(){
       <td data-l="Inicio" class="nowrap">${fmtDate(m.inicio)}</td>
       <td data-l="Vence" class="nowrap"><b>${fmtDate(i.venc)}</b><div class="small muted">${i.status==='baja'?(m.fechaBaja?'baja '+fmtDate(m.fechaBaja):''):diasText(i.days)}</div></td>
       <td data-l="Estado"><span class="badge ${STATUS[i.status].cls}">${STATUS[i.status].label}</span>${m.ultimoRecordatorio&&needs?`<div class="small muted">avisado ${fmtDate(m.ultimoRecordatorio)}</div>`:''}</td>
-      <td data-l="Aportado" class="right nowrap priv"><b>${fmtUSD(i.totalUSD)}</b><div class="small muted">${i.totalMeses} mes(es)</div></td>
+      <td data-l="Aportado" class="right nowrap priv"><b>${fmtUSD(i.totalUSD)}</b><div class="small muted">${i.pays.length} pago(s)</div></td>
       <td class="acts-td priv"><div class="acts">
         ${needs&&m.activo?`<a class="btn sm wa" target="_blank" rel="noopener" href="${waLink(m.telefono,reminderMsg(m))}" onclick="markReminded('${m.id}')" title="${i.status==='pendiente'?'Enviar bienvenida':'Enviar recordatorio'} por WhatsApp">💬 ${i.status==='pendiente'?'Bienvenida':'Recordar'}</a>`:''}
         ${m.activo?`<button class="btn sm icon" data-act="pay" data-id="${m.id}" title="Registrar pago">💳</button>`:''}
@@ -1198,7 +1199,7 @@ function openPayment(id, memberId){
 function refreshDesde(){
   const f=$('#formPayment');
   if(desdeTouched || !f.elements.memberId.value) { if(!f.elements.desde.value) f.elements.desde.value=f.elements.fecha.value; return; }
-  f.elements.desde.value=suggestDesde(f.elements.memberId.value, f.elements.fecha.value||today(), f.elements.id.value);
+  f.elements.desde.value=suggestDesde(f.elements.memberId.value, f.elements.fecha.value||today(), f.elements.id.value, f.elements.montoUSD.value);
 }
 function updatePayPreview(){
   const f=$('#formPayment'); const m=memberById(f.elements.memberId.value);
@@ -1224,7 +1225,7 @@ function updatePayPreview(){
   E.fecha.addEventListener('change',()=>{ refreshDesde(); updatePayPreview(); });
   E.desde.addEventListener('input',()=>{ desdeTouched=true; updatePayPreview(); });
   E.meses.addEventListener('input',()=>{ E.montoUSD.value=round2(Math.max(1,parseInt(E.meses.value)||1)*num(DB.settings.precioUSD)); fromUSD(); updatePayPreview(); });
-  E.montoUSD.addEventListener('input',fromUSD);
+  E.montoUSD.addEventListener('input',()=>{ fromUSD(); refreshDesde(); updatePayPreview(); });
   E.tasa.addEventListener('input',fromUSD);
   E.montoBs.addEventListener('input',()=>{ if(num(E.tasa.value)) E.montoUSD.value=round2(num(E.montoBs.value)/num(E.tasa.value)); });
   E.referencia.addEventListener('input',updatePayPreview);
@@ -1234,11 +1235,13 @@ $('#dlgPayment').addEventListener('close',()=>{
   const E=$('#formPayment').elements; const id=E.id.value;
   const data={memberId:E.memberId.value, fecha:E.fecha.value, meses:Math.max(1,parseInt(E.meses.value)||1), tasa:num(E.tasa.value), montoBs:round2(num(E.montoBs.value)),
     montoUSD:round2(num(E.montoUSD.value)), referencia:E.referencia.value.trim(), desde:E.desde.value||E.fecha.value, notas:E.notas.value.trim()};
+  data.desdeManual = data.desde !== suggestDesde(data.memberId, data.fecha, id, data.montoUSD);
   if(!data.memberId){ toast('Selecciona un miembro.',null,true); return; }
   let p;
   if(id){ p=DB.payments.find(x=>x.id===id); Object.assign(p,data); }
   else { p={id:uid(),...data,creado:new Date().toISOString()}; DB.payments.push(p); }
   if(data.tasa && !num(DB.settings.tasa)) DB.settings.tasa=data.tasa;
+  recalcCoverage(data.memberId);
   commit();
   const m=memberById(p.memberId);
   toast(`💎 Pago ${id?'actualizado':'registrado'}. ${esc(firstName(m?.nombre))} activo hasta ${fmtDate(memberVenc(p.memberId))}.`, m?{label:'Enviar confirmación',href:waLink(m.telefono,confirmMsg(p))}:null);
@@ -1289,7 +1292,7 @@ function openHistory(id){
     <div class="mini">
       <div><b><span class="badge ${STATUS[i.status].cls}">${STATUS[i.status].label}</span></b><span>Estado</span></div>
       <div><b>${fmtDate(i.venc)}</b><span>Vencimiento · ${diasText(i.days)}</span></div>
-      <div><b class="gold">${fmtUSD(i.totalUSD)}</b><span>${i.totalMeses} mes(es) aportados</span></div>
+      <div><b class="gold">${fmtUSD(i.totalUSD)}</b><span>${i.pays.length} pago(s) · total aportado</span></div>
     </div>
     <p class="small muted">📞 ${esc(fmtPhone(m.telefono))}${m.alias?' · @'+esc(m.alias):''} · Miembro desde ${fmtDate(m.inicio)}${m.fechaBaja&&!m.activo?' · Baja: '+fmtDate(m.fechaBaja):''}${m.notas?'<br>📝 '+esc(m.notas):''}</p>
     <div class="list">${i.pays.length?i.pays.map(p=>`<div class="li"><div class="info"><b>${fmtDate(p.fecha)} · Ref. ${esc(p.referencia||'—')}</b><span>${p.meses} mes(es): ${fmtDate(p.desde||p.fecha)} → ${fmtDate(paymentHasta(p))}${p.notas?' · '+esc(p.notas):''}</span></div><div class="right"><b class="gold">${fmtUSD(p.montoUSD)}</b><div class="small muted">${fmtBs(p.montoBs)}</div></div></div>`).join(''):'<div class="empty">Sin pagos registrados.</div>'}</div>`;
@@ -1326,7 +1329,7 @@ document.addEventListener('click',e=>{
         DB.members=DB.members.filter(x=>x.id!==id); DB.payments=DB.payments.filter(p=>p.memberId!==id); commit(); toast('🗑 Miembro eliminado');
       } break; }
     case 'editPay': openPayment(id); break;
-    case 'delPay': { const p=DB.payments.find(x=>x.id===id); if(confirm(`¿Eliminar el pago Ref. ${p.referencia} del ${fmtDate(p.fecha)}?`)){ DB.payments=DB.payments.filter(x=>x.id!==id); commit(); toast('🗑 Pago eliminado'); } break; }
+    case 'delPay': { const p=DB.payments.find(x=>x.id===id); if(confirm(`¿Eliminar el pago Ref. ${p.referencia} del ${fmtDate(p.fecha)}?`)){ DB.payments=DB.payments.filter(x=>x.id!==id); recalcCoverage(p.memberId); commit(); toast('🗑 Pago eliminado'); } break; }
     case 'editExp': openExpense(id); break;
     case 'delExp': { const x=DB.expenses.find(e=>e.id===id); if(confirm(`¿Eliminar el gasto "${x.concepto}"?`)){ DB.expenses=DB.expenses.filter(e=>e.id!==id); commit(); toast('🗑 Gasto eliminado'); } break; }
     case 'copyRem': copyText(reminderMsg(m)); markReminded(id); break;
@@ -1576,7 +1579,15 @@ function addOcrRows(list){
 function recalcCoverage(memberId){
   let venc=null;
   DB.payments.filter(p=>p.memberId===memberId).sort((a,b)=>a.fecha.localeCompare(b.fecha)||String(a.creado||'').localeCompare(String(b.creado||'')))
-    .forEach(p=>{ p.desde = venc && venc>p.fecha ? venc : p.fecha; venc=addMonths(p.desde, p.meses||1); });
+    .forEach(p=>{
+      if(!p.desdeManual) p.desde = (num(p.montoUSD)===0 && venc && venc>p.fecha) ? venc : p.fecha;
+      const h=addMonths(p.desde, p.meses||1); if(!venc || h>venc) venc=h;
+    });
+}
+// Aplica una sola vez la regla de renovación mensual a los datos ya guardados
+function migrateCoverage(){
+  if(DB.coverageRule==='fecha-pago') return false;
+  DB.members.forEach(m=>recalcCoverage(m.id)); DB.coverageRule='fecha-pago'; return true;
 }
 // Un pago ya registrado: misma referencia, o del mismo miembro con ±3 días de diferencia
 const DUP_DAYS=3;
@@ -1827,7 +1838,7 @@ $('#ocrImport').onclick=()=>{
         tocados.add(m.id); actualizados++; return;
       }
       DB.payments.push({id:uid(), memberId:m.id, fecha:r.fecha, meses:r.meses, tasa:t, montoUSD:usd, montoBs:bs, referencia:ref,
-        desde:suggestDesde(m.id, r.fecha), notas:r.notas||origen, creado:new Date().toISOString()});
+        desde:suggestDesde(m.id, r.fecha, undefined, usd), notas:r.notas||origen, creado:new Date().toISOString()});
       tocados.add(m.id); pagos++;
     }
   });
@@ -1900,7 +1911,9 @@ function applyServerDoc(doc){
   setRestricted(!!doc.restricted);
   cloud.lastServer=doc; cloud.version=doc.version||0; cloud.updatedAt=doc.updatedAt||null;
   if(doc.data){ DB=normalize(JSON.parse(JSON.stringify(doc.data))); saveLocal(); }
-  cloud.dirty=false; saveCloudMeta(); renderAll();
+  cloud.dirty=false; saveCloudMeta();
+  if(!doc.restricted && doc.data && migrateCoverage()){ saveLocal(); if(cloud.pin){ cloud.dirty=true; saveCloudMeta(); schedulePush(0); } }
+  renderAll();
 }
 async function cloudInit(){
   if(!cloud.enabled){ setSync('local'); return; }
@@ -2047,6 +2060,7 @@ $('#syncChip').onclick=()=>{
 
 /* ---------- Init ---------- */
 try{ const t=localStorage.getItem(STORAGE_KEY+'_tab'); if(t && $('#tab-'+t)) switchTab(t); }catch{}
+if(migrateCoverage()) saveLocal();   // regla de renovación mensual (una sola vez)
 renderAll();
 cloudInit().finally(()=>{ if(DB.settings.autoTasa!==false && rateIsStale()) updateRate(true); });
 setInterval(cloudPoll, 20000);

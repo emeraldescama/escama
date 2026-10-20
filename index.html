@@ -327,7 +327,7 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
   <section class="tab" id="tab-members">
     <div class="toolbar">
       <h2>Miembros</h2>
-      <button class="btn gold" id="btnOcr">📷 Importar capturas</button>
+      <button class="btn gold" id="btnOcr">📥 Importar miembros</button>
       <button class="btn primary" data-open="member">＋ Nuevo miembro</button>
     </div>
     <div class="toolbar">
@@ -566,19 +566,31 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
 </dialog>
 
 <dialog id="dlgOcr">
-  <div class="dh"><h3>📷 Importar miembros y pagos desde capturas</h3><button class="x" onclick="this.closest('dialog').close()">×</button></div>
+  <div class="dh"><h3>📥 Importar miembros y pagos</h3><button class="x" onclick="this.closest('dialog').close()">×</button></div>
   <div class="db">
-    <label class="drop" id="ocrDrop">
-      <div class="big">🖼️</div>
-      <b>Toca para elegir capturas</b>, arrástralas aquí o pégalas con Ctrl+V
-      <div class="small muted">Se leen nombre, teléfono y fecha de cada fila. El reconocimiento (OCR) se hace en tu navegador; la primera vez descarga el motor (~5 MB, requiere internet).</div>
-      <input type="file" id="ocrFile" accept="image/*" multiple hidden>
-    </label>
+    <div class="grid g2" style="gap:12px">
+      <label class="drop" id="xlsDrop" style="border-color:rgba(16,185,129,.5)">
+        <div class="big">📊</div>
+        <b>Subir Excel o CSV</b> (.xlsx, .xls, .csv)
+        <div class="small muted">Carga todos los miembros de una vez. Usa la plantilla para que las columnas se reconozcan solas.</div>
+        <input type="file" id="xlsFile" accept=".xlsx,.xls,.csv,.ods,.txt" hidden>
+      </label>
+      <label class="drop" id="ocrDrop">
+        <div class="big">🖼️</div>
+        <b>Subir capturas de pantalla</b> (o pégalas con Ctrl+V)
+        <div class="small muted">Lee nombre, teléfono y fecha de cada fila (OCR). La primera vez descarga el motor (~5 MB).</div>
+        <input type="file" id="ocrFile" accept="image/*" multiple hidden>
+      </label>
+    </div>
+    <div class="toolbar mt" style="margin-bottom:0">
+      <button class="btn sm" id="btnTpl" type="button">⬇️ Descargar plantilla Excel</button>
+      <span class="small muted">Columnas: Nombre · Teléfono · Alias · Fecha inicio · Fecha de pago · Meses · Monto USD · Monto Bs · Tasa BCV · Referencia · Notas</span>
+    </div>
     <div class="thumbs" id="ocrThumbs"></div>
     <div id="ocrStatusWrap" hidden><div class="prog"><div id="ocrBar"></div></div><div class="small muted" id="ocrStatus"></div></div>
 
     <div class="frow mt">
-      <label class="f"><span>La fecha de la captura es…</span><select id="ocrMode"><option value="pago">Fecha de pago (registrar pago)</option><option value="inicio">Solo fecha de inicio (sin pago)</option></select></label>
+      <label class="f"><span>La fecha es…</span><select id="ocrMode"><option value="pago">Fecha de pago (registrar pago)</option><option value="inicio">Solo fecha de inicio (sin pago)</option></select></label>
       <label class="f"><span>Meses por defecto</span><input type="number" id="ocrMeses" min="1" value="1"></label>
       <label class="f"><span>Monto USD por mes</span><input type="number" id="ocrUsd" step="0.01" min="0"></label>
     </div>
@@ -1540,14 +1552,19 @@ function addOcrRows(list){
   const meses=Math.max(1,parseInt($('#ocrMeses').value)||1), usd=num($('#ocrUsd').value);
   list.forEach(r=>{
     if(ocrRows.some(x=>normName(x.nombre)===normName(r.nombre) && x.fecha===r.fecha)) return;
-    ocrRows.push({id:uid(), sel:true, nombre:r.nombre, telefono:r.telefono||'', fecha:r.fecha||'', meses, usd:round2(usd*meses), ref:''});
+    const me=r.meses?Math.max(1,parseInt(r.meses)||1):meses;
+    ocrRows.push({id:uid(), sel:true, nombre:r.nombre, telefono:r.telefono||'', fecha:r.fecha||'', meses:me,
+      usd: r.usd!=null&&r.usd!=='' ? round2(num(r.usd)) : round2(usd*me), ref:r.ref||'',
+      alias:r.alias||'', inicio:r.inicio||'', bs:r.bs??null, tasa:r.tasa??null, notas:r.notas||'', sinPago:!!r.sinPago, src:r.src||'captura'});
   });
   renderOcr();
 }
 function ocrRowState(r){
   if(!r.fecha) return ['dup','⚠ Falta la fecha'];
   const m=findExisting(r);
-  if(m && $('#ocrMode').value==='pago' && DB.payments.some(p=>p.memberId===m.id && p.fecha===r.fecha)) return ['dup','Ya tiene pago ese día'];
+  const pago=$('#ocrMode').value==='pago' && !r.sinPago;
+  if(m && pago && DB.payments.some(p=>p.memberId===m.id && p.fecha===r.fecha)) return ['dup','Ya tiene pago ese día'];
+  if(r.sinPago) return m ? ['old','Existe (sin pago)'] : ['new','Nuevo (sin pago)'];
   return m ? ['old','Existe: '+m.nombre] : ['new','Nuevo miembro'];
 }
 function renderOcr(){
@@ -1634,6 +1651,132 @@ $('#ocrMode').addEventListener('change',renderOcr);
 $('#ocrAddRow').onclick=()=>{ ocrRows.push({id:uid(),sel:true,nombre:'',telefono:'',fecha:today(),meses:Math.max(1,parseInt($('#ocrMeses').value)||1),usd:round2(num($('#ocrUsd').value)*Math.max(1,parseInt($('#ocrMeses').value)||1)),ref:''}); renderOcr(); };
 $('#ocrClear').onclick=()=>{ if(ocrRows.length && !confirm('¿Vaciar todas las filas detectadas?')) return; ocrRows=[]; ocrRaw=''; $('#ocrThumbs').innerHTML=''; $('#ocrStatusWrap').hidden=true; renderOcr(); };
 $('#ocrApplyDefaults').onclick=()=>{ const me=Math.max(1,parseInt($('#ocrMeses').value)||1), u=num($('#ocrUsd').value); ocrRows.forEach(r=>{r.meses=me; r.usd=round2(me*u);}); renderOcr(); };
+/* ---------- Excel / CSV ---------- */
+function loadXlsx(){
+  if(window.XLSX) return Promise.resolve();
+  return new Promise((res,rej)=>{ const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload=res; s.onerror=()=>rej(new Error('No se pudo cargar el lector de Excel. Revisa tu conexión a internet.')); document.head.appendChild(s); });
+}
+const COLS={
+  nombre:/^(nombre( y apellidos?| completo)?|nombres?|miembro|suscriptor|name)$/,
+  apellido:/^(apellidos?)$/,
+  telefono:/(tel|telefono|celular|whatsapp|movil|phone)/,
+  alias:/(alias|nick|apodo|usuario)/,
+  inicio:/(inicio|alta|ingreso|registro|suscripcion)/,
+  fecha:/(fecha.*pago|ultimo pago|pago.*fecha|^fecha$|^pago$)/,
+  meses:/(mes)/,
+  bs:/(^|\s)(bs|ves)(\s|$)|bolivar/,
+  usd:/(usd|\$|dolar|dólar|^monto$|^aporte$)/,
+  tasa:/(tasa|bcv)/,
+  ref:/(ref)/,
+  notas:/(nota|observ|coment)/
+};
+function mapHeaders(headers){
+  const map={};
+  headers.forEach((h,i)=>{
+    const n=normName(String(h||'')).replace(/[._:]/g,' ').trim(); if(!n) return;
+    for(const [k,re] of Object.entries(COLS)){
+      if(map[k]!==undefined) continue;
+      if(k==='usd' && COLS.bs.test(n)) continue;          // "Monto Bs" no es USD
+      if(k==='fecha' && COLS.inicio.test(n)) continue;     // "Fecha inicio" no es fecha de pago
+      if(k==='tasa' && /usd|bs/.test(n) && !/tasa/.test(n)) continue;
+      if(re.test(n)){ map[k]=i; break; }
+    }
+  });
+  return map;
+}
+function parseAnyDate(v){
+  if(v==null || v==='') return '';
+  if(v instanceof Date && !isNaN(v)) return toISO(new Date(v.getFullYear(), v.getMonth(), v.getDate()));
+  if(typeof v==='number' && v>20000 && v<80000){ const d=new Date(Math.round((v-25569)*86400000)); return toISO(new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())); }
+  const t=String(v).trim(); let m;
+  if((m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  if((m=t.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/))) return resolveYearDate(+m[1], +m[2], m[3]);
+  if((m=t.match(/(\d{1,2})\s*(?:de\s+)?(ene|feb|mar|abr|may|jun|jul|ago|sept?|set|oct|nov|dic)[a-z.]*\s*(?:de\s+|,\s*)?(\d{4})?/i))) return resolveYearDate(+m[1], MONTHS[m[2].toLowerCase().slice(0,3)], m[3]);
+  return '';
+}
+function cleanPhone(v){
+  if(v==null || v==='') return '';
+  let t=String(v).trim(); if(/^[—–-]+$/.test(t)) return '';
+  const plus=t.startsWith('+'); let d=t.replace(/\D/g,'');
+  if(!d) return '';
+  if(!plus && d.length===10 && d.startsWith('4')) d='0'+d;    // Excel quita el 0 inicial
+  return (plus?'+':'')+d;
+}
+function rowsFromSheet(aoa){
+  // Busca la fila de encabezados (la primera que tenga una columna de nombre)
+  let hi=aoa.findIndex(r=>r && r.some(c=>COLS.nombre.test(normName(String(c||'')))));
+  if(hi<0) throw new Error('No encontré una columna "Nombre". Usa la plantilla o pon los títulos en la primera fila.');
+  const map=mapHeaders(aoa[hi]); const out=[];
+  const get=(r,k)=>map[k]!==undefined ? r[map[k]] : undefined;
+  for(const r of aoa.slice(hi+1)){
+    if(!r || !r.some(c=>c!==null && c!=='' && c!==undefined)) continue;
+    let nombre=String(get(r,'nombre')??'').trim(); const ap=String(get(r,'apellido')??'').trim();
+    if(ap && !normName(nombre).includes(normName(ap))) nombre=(nombre+' '+ap).trim();
+    if(!nombre || /^ejemplo/i.test(nombre)) continue;
+    const fecha=parseAnyDate(get(r,'fecha')), inicio=parseAnyDate(get(r,'inicio'));
+    const mesesV=get(r,'meses'), usdV=get(r,'usd'), bsV=get(r,'bs'), tasaV=get(r,'tasa');
+    const hasPay = !!fecha;
+    out.push({nombre, telefono:cleanPhone(get(r,'telefono')), alias:String(get(r,'alias')??'').trim(), inicio,
+      fecha: fecha || inicio || today(), sinPago: !hasPay,
+      meses: mesesV!=null&&mesesV!=='' ? Math.max(1,parseInt(mesesV)||1) : null,
+      usd: usdV!=null&&usdV!=='' ? num(String(usdV).replace(',','.').replace(/[^\d.]/g,'')) : null,
+      bs: bsV!=null&&bsV!=='' ? (typeof bsV==='number'? bsV : parseBcvNumber(String(bsV).replace(/[^\d.,]/g,''))) : null,
+      tasa: tasaV!=null&&tasaV!=='' ? (typeof tasaV==='number'? tasaV : parseBcvNumber(String(tasaV).replace(/[^\d.,]/g,''))) : null,
+      ref:String(get(r,'ref')??'').trim(), notas:String(get(r,'notas')??'').trim(), src:'excel'});
+  }
+  // si falta el USD pero hay Bs y tasa, se calcula
+  out.forEach(x=>{ if(x.usd==null && x.bs && x.tasa) x.usd=round2(x.bs/x.tasa); });
+  return out;
+}
+async function importSpreadsheet(file){
+  if(!file) return;
+  const st=$('#ocrStatus'); $('#ocrStatusWrap').hidden=false; $('#ocrBar').style.width='30%';
+  try{
+    st.textContent='Leyendo '+file.name+'…';
+    await loadXlsx();
+    const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});
+    let rows=[], header=false, lastErr=null;
+    for(const name of wb.SheetNames){
+      const aoa=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null});
+      try{ rows=rowsFromSheet(aoa); header=true; if(rows.length) break; }catch(e){ lastErr=e; }
+    }
+    if(!header && lastErr) throw lastErr;
+    if(!rows.length) throw new Error('El archivo no tiene miembros para cargar (las filas que empiezan con "Ejemplo" se ignoran).');
+    const before=ocrRows.length; addOcrRows(rows);
+    $('#ocrBar').style.width='100%';
+    const sinTel=rows.filter(r=>!r.telefono).length, sinPago=rows.filter(r=>r.sinPago).length;
+    st.textContent=`✅ ${file.name}: ${ocrRows.length-before} fila(s) listas para revisar`+(sinPago?` · ${sinPago} sin fecha de pago (se crean sin pago)`:'')+(sinTel?` · ${sinTel} sin teléfono`:'')+'.';
+  }catch(err){ st.textContent='❌ '+err.message; toast('❌ '+esc(err.message),null,true); }
+}
+async function downloadTemplate(){
+  try{
+    await loadXlsx();
+    const head=['Nombre','Teléfono','Alias','Fecha inicio','Fecha de pago','Meses','Monto USD','Monto Bs','Tasa BCV','Referencia','Notas'];
+    const ws=XLSX.utils.aoa_to_sheet([head,
+      ['Ejemplo: María González','04141234567','PikaMary','01/09/2026','01/09/2026',1,2,'','','123456','Las filas que empiezan con "Ejemplo" se ignoran'],
+      ['Ejemplo: Carlos Pérez','04241112233','','15/08/2026','15/09/2026',3,6,'','','654321','Pagó 3 meses por adelantado']]);
+    ws['!cols']=[28,15,16,13,14,8,11,11,10,13,40].map(w=>({wch:w}));
+    const help=XLSX.utils.aoa_to_sheet([['Instrucciones'],
+      ['1. Llena una fila por miembro (o una fila por cada pago, si quieres cargar el historial).'],
+      ['2. Solo "Nombre" es obligatorio. Fechas en formato DD/MM/AAAA.'],
+      ['3. Sin "Fecha de pago", el miembro se crea sin pago (aparecerá como "Sin pagos").'],
+      ['4. Si dejas "Monto USD" vacío se calcula: Meses × aporte mensual ($2).'],
+      ['5. "Monto Bs" y "Tasa BCV" son opcionales; si faltan se usa la tasa BCV actual.'],
+      ['6. En la app: Miembros → 📥 Importar miembros → Subir Excel o CSV → revisa → Importar.']]);
+    help['!cols']=[{wch:95}];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Miembros'); XLSX.utils.book_append_sheet(wb,help,'Instrucciones');
+    XLSX.writeFile(wb,'plantilla_miembros_escama.xlsx');
+  }catch(err){ toast('❌ '+esc(err.message),null,true); }
+}
+$('#xlsFile').addEventListener('change',e=>{ importSpreadsheet(e.target.files[0]); e.target.value=''; });
+const xdrop=$('#xlsDrop');
+['dragenter','dragover'].forEach(ev=>xdrop.addEventListener(ev,e=>{e.preventDefault(); xdrop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>xdrop.addEventListener(ev,e=>{e.preventDefault(); xdrop.classList.remove('over');}));
+xdrop.addEventListener('drop',e=>importSpreadsheet(e.dataTransfer.files[0]));
+$('#btnTpl').onclick=downloadTemplate;
+
 $('#ocrImport').onclick=()=>{
   const pago=$('#ocrMode').value==='pago'; const tasa=num(DB.settings.tasa);
   let nuevos=0, pagos=0, omitidos=0;
@@ -1641,18 +1784,22 @@ $('#ocrImport').onclick=()=>{
   if(sinFecha){ toast(`⚠ ${sinFecha} fila(s) seleccionada(s) no tienen fecha. Complétalas o desmárcalas.`,null,true); return; }
   [...ocrRows].filter(r=>r.sel && r.nombre.trim()).sort((a,b)=>a.fecha.localeCompare(b.fecha)).forEach(r=>{
     let m=findExisting(r);
-    if(!m){ m={id:uid(), nombre:r.nombre.trim(), telefono:r.telefono.trim(), alias:'', inicio:r.fecha, notas:'Importado desde captura', activo:true, creado:new Date().toISOString()}; DB.members.push(m); nuevos++; }
-    else { if(!m.telefono && r.telefono) m.telefono=r.telefono; if(r.fecha < m.inicio) m.inicio=r.fecha; }
-    if(pago){
+    const origen = r.src==='excel' ? 'Importado desde Excel' : 'Importado desde captura';
+    const inicio = r.inicio && (!r.fecha || r.inicio<=r.fecha || r.sinPago) ? r.inicio : r.fecha;
+    if(!m){ m={id:uid(), nombre:r.nombre.trim(), telefono:r.telefono.trim(), alias:(r.alias||'').replace(/^@/,''), inicio, notas:r.notas||origen, activo:true, creado:new Date().toISOString()}; DB.members.push(m); nuevos++; }
+    else { if(!m.telefono && r.telefono) m.telefono=r.telefono; if(!m.alias && r.alias) m.alias=r.alias.replace(/^@/,''); if(inicio < m.inicio) m.inicio=inicio; }
+    if(pago && !r.sinPago){
       if(DB.payments.some(p=>p.memberId===m.id && p.fecha===r.fecha)){ omitidos++; return; }
-      DB.payments.push({id:uid(), memberId:m.id, fecha:r.fecha, meses:r.meses, tasa, montoUSD:round2(r.usd), montoBs:round2(r.usd*tasa), referencia:r.ref.trim(),
-        desde:suggestDesde(m.id, r.fecha), notas:'Importado desde captura', creado:new Date().toISOString()});
+      const t = num(r.tasa) || tasa;
+      const usd = round2(num(r.usd)), bs = r.bs!=null && r.bs!=='' ? round2(num(r.bs)) : round2(usd*t);
+      DB.payments.push({id:uid(), memberId:m.id, fecha:r.fecha, meses:r.meses, tasa:t, montoUSD:usd, montoBs:bs, referencia:String(r.ref||'').trim(),
+        desde:suggestDesde(m.id, r.fecha), notas:origen, creado:new Date().toISOString()});
       pagos++;
     }
   });
   ocrRows=ocrRows.filter(r=>!r.sel); commit(); renderOcr();
   if(!ocrRows.length) $('#dlgOcr').close();
-  toast(`📷 Importación lista: ${nuevos} miembro(s) nuevo(s), ${pagos} pago(s)${omitidos?`, ${omitidos} duplicado(s) omitido(s)`:''}.`);
+  toast(`📥 Importación lista: ${nuevos} miembro(s) nuevo(s), ${pagos} pago(s)${omitidos?`, ${omitidos} duplicado(s) omitido(s)`:''}.`);
 };
 
 /* =========================================================

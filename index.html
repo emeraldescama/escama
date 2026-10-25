@@ -499,7 +499,7 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
   </section>
 </main>
 
-<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.25-b</span></footer>
+<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.25-c</span></footer>
 
 <!-- ================= DIALOGS ================= -->
 <dialog id="dlgMember">
@@ -1478,13 +1478,16 @@ async function updateRate(silent){
   if(rateBusy) return false; rateBusy=true; rateError=false; renderRate();
   const errors=[];
   try{
-    for(const s of RATE_SOURCES){
+    // 1º el servidor propio (Vercel consulta al BCV sin intermediarios); luego los respaldos públicos
+    const sources = (/^https?:$/.test(location.protocol) ? [{name:'bcv.org.ve', url:'/api/tasa'+(silent?'':'?force=1'), type:'server'}] : []).concat(RATE_SOURCES);
+    for(const s of sources){
       try{
-        const r=await fetchTimeout(s.url); let res;
-        if(s.type==='html') res=parseBcvHtml(await r.text());
+        const r=await fetchTimeout(s.url, s.type==='server'?25000:12000); let res;
+        if(s.type==='server'){ const j=await r.json(); if(!(num(j.tasa)>0)) throw new Error('sin tasa'); res=j; }
+        else if(s.type==='html') res=parseBcvHtml(await r.text());
         else{ const j=await r.json(); const t=num(j.promedio||j.venta||j.price); if(!(t>0)) throw new Error('respuesta sin tasa'); res={tasa:t, fecha:String(j.fechaActualizacion||'').slice(0,10), fechaTxt:''}; }
         const prev=num(DB.settings.tasa);
-        Object.assign(DB.settings,{tasa:res.tasa, tasaFecha:res.fecha, tasaFechaTxt:res.fechaTxt, tasaFuente:s.name, tasaActualizada:new Date().toISOString()});
+        Object.assign(DB.settings,{tasa:res.tasa, tasaFecha:res.fecha, tasaFechaTxt:res.fechaTxt, tasaFuente:res.fuente||s.name, tasaActualizada:new Date().toISOString()});
         save(); rateBusy=false; renderAll();
         if(!silent || prev!==res.tasa) toast(`💱 Tasa BCV: <b>Bs. ${fmtRate(res.tasa)}</b> por USD${res.fechaTxt?' · Fecha valor: '+esc(res.fechaTxt):(res.fecha?' · '+fmtDate(res.fecha):'')}`);
         return true;

@@ -41,8 +41,8 @@ function stripPublic(data) {
 }
 
 function pinOk(req) {
-  const pin = process.env.ADMIN_PIN;
-  return !!pin && String(req.headers['x-admin-pin'] || '') === String(pin);
+  const pin = process.env.ADMIN_PIN;   // se ignoran espacios accidentales al configurarlo en Vercel
+  return !!String(pin || '').trim() && String(req.headers['x-admin-pin'] || '').trim() === String(pin).trim();
 }
 
 export default async function handler(req, res) {

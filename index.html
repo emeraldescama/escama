@@ -499,12 +499,12 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
   </section>
 </main>
 
-<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.25</span></footer>
+<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.25-b</span></footer>
 
 <!-- ================= DIALOGS ================= -->
 <dialog id="dlgMember">
   <form method="dialog" id="formMember">
-    <div class="dh"><h3 id="memTitle">Nuevo miembro</h3><button class="x" value="cancel" formnovalidate>×</button></div>
+    <div class="dh"><h3 id="memTitle">Nuevo miembro</h3><button type="button" class="x" onclick="this.closest('dialog').close('cancel')" aria-label="Cerrar">×</button></div>
     <div class="db">
       <input type="hidden" name="id">
       <label class="f"><span>Nombre y Apellido *</span><input type="text" name="nombre" required></label>
@@ -517,13 +517,13 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
       <label class="check" id="memFirstPayWrap"><input type="checkbox" name="firstPay" checked> Registrar su primer pago a continuación</label>
       <div class="warn" id="memDupWarn" hidden></div>
     </div>
-    <div class="df"><button class="btn ghost" value="cancel" formnovalidate>Cancelar</button><button class="btn primary" value="ok">Guardar</button></div>
+    <div class="df"><button type="button" class="btn ghost" onclick="this.closest('dialog').close('cancel')">Cancelar</button><button class="btn primary" value="ok">Guardar</button></div>
   </form>
 </dialog>
 
 <dialog id="dlgPayment">
   <form method="dialog" id="formPayment">
-    <div class="dh"><h3 id="payTitle">Registrar pago</h3><button class="x" value="cancel" formnovalidate>×</button></div>
+    <div class="dh"><h3 id="payTitle">Registrar pago</h3><button type="button" class="x" onclick="this.closest('dialog').close('cancel')" aria-label="Cerrar">×</button></div>
     <div class="db">
       <input type="hidden" name="id">
       <label class="f"><span>Miembro *</span><select name="memberId" required></select></label>
@@ -544,13 +544,13 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
       <div class="warn" id="refWarn" hidden></div>
       <div class="preview" id="payPreview"></div>
     </div>
-    <div class="df"><button class="btn ghost" value="cancel" formnovalidate>Cancelar</button><button class="btn primary" value="ok">Guardar pago</button></div>
+    <div class="df"><button type="button" class="btn ghost" onclick="this.closest('dialog').close('cancel')">Cancelar</button><button class="btn primary" value="ok">Guardar pago</button></div>
   </form>
 </dialog>
 
 <dialog id="dlgExpense">
   <form method="dialog" id="formExpense">
-    <div class="dh"><h3 id="expTitle">Nuevo gasto</h3><button class="x" value="cancel" formnovalidate>×</button></div>
+    <div class="dh"><h3 id="expTitle">Nuevo gasto</h3><button type="button" class="x" onclick="this.closest('dialog').close('cancel')" aria-label="Cerrar">×</button></div>
     <div class="db">
       <input type="hidden" name="id">
       <label class="f"><span>Concepto *</span><input type="text" name="concepto" required placeholder="Ej. Impresión de 100 stickers Community Day"></label>
@@ -565,7 +565,7 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
       </div>
       <div class="preview" id="expPreview"></div>
     </div>
-    <div class="df"><button class="btn ghost" value="cancel" formnovalidate>Cancelar</button><button class="btn primary" value="ok">Guardar gasto</button></div>
+    <div class="df"><button type="button" class="btn ghost" onclick="this.closest('dialog').close('cancel')">Cancelar</button><button class="btn primary" value="ok">Guardar gasto</button></div>
   </form>
 </dialog>
 <datalist id="catList"></datalist>
@@ -624,14 +624,14 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
 
 <dialog id="dlgPin">
   <form method="dialog" id="formPin">
-    <div class="dh"><h3>🔑 PIN de administrador</h3><button class="x" value="cancel" formnovalidate>×</button></div>
+    <div class="dh"><h3>🔑 PIN de administrador</h3><button type="button" class="x" onclick="this.closest('dialog').close('cancel')" aria-label="Cerrar">×</button></div>
     <div class="db">
       <p class="muted small" id="pinMsg" style="margin-top:0"></p>
       <label class="f"><span>PIN</span><input type="password" name="pin" autocomplete="current-password" required></label>
       <div class="warn" id="pinErr" hidden></div>
       <label class="check"><input type="checkbox" name="remember" checked> Recordar el PIN en este equipo</label>
     </div>
-    <div class="df"><button class="btn ghost" value="cancel" formnovalidate>Cancelar</button><button class="btn primary" value="ok">Entrar</button></div>
+    <div class="df"><button type="button" class="btn ghost" onclick="this.closest('dialog').close('cancel')">Cancelar</button><button class="btn primary" value="ok">Entrar</button></div>
   </form>
 </dialog>
 
@@ -1248,7 +1248,7 @@ $('#dlgPayment').addEventListener('close',()=>{
 });
 $('#formPayment').addEventListener('submit',e=>{
   const E=e.target.elements;
-  if(e.submitter?.value==='ok'){
+  if((e.submitter?.value||'ok')==='ok'){
     const ref=E.referencia.value.trim();
     const dup=ref && DB.payments.find(p=>p.id!==E.id.value && String(p.referencia).trim()===ref);
     if(dup && !confirm(`La referencia ${ref} ya existe. ¿Guardar de todas formas?`)) e.preventDefault();
@@ -2056,7 +2056,7 @@ function requirePin(msg){
   return pinPromise;
 }
 $('#formPin').addEventListener('submit', async e=>{
-  if(e.submitter?.value!=='ok') return;
+  if((e.submitter?.value||'ok')!=='ok') return;
   e.preventDefault();
   const pin=e.target.elements.pin.value.trim(); const err=$('#pinErr');
   try{

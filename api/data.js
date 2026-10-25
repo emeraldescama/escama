@@ -4,7 +4,9 @@
 //                               montos, gastos ni teléfonos) con restricted: true
 // GET  /api/data?meta=1     -> { version, updatedAt }          (público, liviano)
 // GET  /api/data?auth=1     -> 200 si el PIN (header x-admin-pin) es correcto
+// GET  /api/data?history=1 -> versiones anteriores guardadas (requiere x-admin-pin)
 // PUT  /api/data            -> guarda { data, baseVersion } (requiere x-admin-pin)
+//                              o { restoreVersion } para volver a una versión anterior
 // Almacenamiento: Upstash Redis (integración de Vercel Marketplace).
 
 const KEY = 'escama:data';
@@ -50,6 +52,15 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
+      if (req.query.history !== undefined) {
+        if (!pinOk(req)) return res.status(401).json({ error: 'pin' });
+        const list = (await redis(s, ['LRANGE', HISTORY, '0', '29'])) || [];
+        return res.status(200).json({ versions: list.map(raw => {
+          try { const d = JSON.parse(raw); return { version: d.version, updatedAt: d.updatedAt, device: d.device || '',
+            members: d.data?.members?.length || 0, payments: d.data?.payments?.length || 0, expenses: d.data?.expenses?.length || 0 }; }
+          catch { return null; }
+        }).filter(Boolean) });
+      }
       if (req.query.auth !== undefined) {
         if (!process.env.ADMIN_PIN) return res.status(503).json({ error: 'pin_not_configured' });
         return pinOk(req) ? res.status(200).json({ ok: true }) : res.status(401).json({ error: 'pin' });
@@ -69,11 +80,29 @@ export default async function handler(req, res) {
       if (!process.env.ADMIN_PIN) return res.status(503).json({ error: 'pin_not_configured' });
       if (!pinOk(req)) return res.status(401).json({ error: 'pin' });
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+      if (body && body.restoreVersion !== undefined) {
+        const list = (await redis(s, ['LRANGE', HISTORY, '0', '29'])) || [];
+        const found = list.map(r => { try { return JSON.parse(r); } catch { return null; } })
+          .find(d => d && Number(d.version) === Number(body.restoreVersion));
+        if (!found) return res.status(404).json({ error: 'version_not_found' });
+        const raw = await redis(s, ['GET', KEY]);
+        const cur = raw ? JSON.parse(raw) : { version: 0 };
+        const doc = { data: found.data, public: found.public || stripPublic(found.data), version: (cur.version || 0) + 1,
+          updatedAt: new Date().toISOString(), device: `restaurada v${found.version}` };
+        await redis(s, ['SET', KEY, JSON.stringify(doc)]);
+        if (raw) { await redis(s, ['LPUSH', HISTORY, raw]); await redis(s, ['LTRIM', HISTORY, '0', '29']); }
+        return res.status(200).json({ data: doc.data, version: doc.version, updatedAt: doc.updatedAt });
+      }
       if (!body || typeof body.data !== 'object' || !Array.isArray(body.data?.members)) {
         return res.status(400).json({ error: 'invalid_data' });
       }
       const raw = await redis(s, ['GET', KEY]);
       const cur = raw ? JSON.parse(raw) : { data: null, version: 0, updatedAt: null };
+      // Protección: nunca reemplazar datos con pagos por datos sin pagos, salvo un "Borrar todo" explícito
+      const curPays = cur.data?.payments?.length || 0, newPays = body.data.payments?.length || 0;
+      if (curPays > 0 && newPays === 0 && !body.allowEmpty) {
+        return res.status(422).json({ error: 'empty_overwrite' });
+      }
       if (Number(body.baseVersion) !== Number(cur.version || 0)) {
         return res.status(409).json({ error: 'conflict', data: cur.data, version: cur.version, updatedAt: cur.updatedAt });
       }

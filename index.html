@@ -499,7 +499,7 @@ footer{color:var(--muted2);text-align:center;font-size:.8rem;padding:20px 0 30px
   </section>
 </main>
 
-<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.20-b</span></footer>
+<footer>💚 Escama Esmeralda · Emerald City · <span id="appVersion">versión 2026.10.25</span></footer>
 
 <!-- ================= DIALOGS ================= -->
 <dialog id="dlgMember">
@@ -745,7 +745,7 @@ function saveLocal(){
 // Guarda en el navegador y, si hay nube + PIN, programa la subida al servidor
 function save(){
   saveLocal();
-  if(cloud.available && cloud.pin){ cloud.dirty=true; saveCloudMeta(); schedulePush(); }
+  if(cloud.available && cloud.pin && !cloud.restricted){ cloud.dirty=true; saveCloudMeta(); schedulePush(); }
 }
 // Cambio hecho por el usuario: en la nube sin PIN se pide el PIN (o se descarta)
 function commit(){
@@ -1411,7 +1411,7 @@ $('#btnCsv').onclick=()=>{
 $('#btnReset').onclick=()=>{
   if(!confirm('¿Borrar TODOS los miembros, pagos y gastos? Esta acción no se puede deshacer.')) return;
   if(prompt('Escribe BORRAR para confirmar')!=='BORRAR') return;
-  const s=DB.settings; DB=defaultDB(); DB.settings={...DB.settings, ...s}; commit(); toast('🗑 Datos borrados');
+  const s=DB.settings; DB=defaultDB(); DB.settings={...DB.settings, ...s}; cloud.allowEmpty=true; commit(); toast('🗑 Datos borrados');
 };
 $('#btnDemo').onclick=()=>{
   if((DB.members.length||DB.payments.length) && !confirm('Se agregarán datos de ejemplo a los existentes. ¿Continuar?')) return;
@@ -1897,9 +1897,11 @@ function renderCloud(){
     <div class="toolbar" style="margin:0">
       ${cloud.pin?'<button class="btn sm" id="cloudLogout">🚪 Olvidar PIN en este equipo</button>':'<button class="btn sm gold" id="cloudLogin">🔑 Ingresar PIN</button>'}
       <button class="btn sm" id="cloudReload">🔄 Recargar desde la nube</button>
+      ${cloud.pin?'<button class="btn sm" id="cloudVersions">🕘 Versiones anteriores</button>':''}
     </div>`;
   $('#cloudLogin')&&($('#cloudLogin').onclick=()=>loginAndSync());
   $('#cloudLogout')&&($('#cloudLogout').onclick=()=>{ if(!confirm('¿Olvidar el PIN en este equipo? Solo se verá la lista pública (sin pagos, ingresos ni teléfonos).')) return; cloud.pin=''; cloud.dirty=false; saveCloudMeta(); cloudInit(); });
+  $('#cloudVersions')&&($('#cloudVersions').onclick=showVersions);
   $('#cloudReload').onclick=async()=>{ if(cloud.dirty && !confirm('Hay cambios de este equipo sin subir. ¿Descartarlos y cargar lo que hay en la nube?')) return; cloud.dirty=false; saveCloudMeta(); await cloudInit(); toast('🔄 Datos recargados desde la nube'); };
 }
 async function api(method, {query='', body}={}){
@@ -1930,7 +1932,7 @@ async function cloudInit(){
       if(cloud.pin && (DB.members.length||DB.payments.length)){ cloud.dirty=true; saveCloudMeta(); schedulePush(0); }
       setSync(cloud.pin?'ok':'empty'); return;
     }
-    if(cloud.dirty && cloud.pin && Number(cloud.version)===Number(doc.version)){ cloud.lastServer=doc; cloud.updatedAt=doc.updatedAt; schedulePush(0); }
+    if(cloud.dirty && cloud.pin && !cloud.restricted && !doc.restricted && Number(cloud.version)===Number(doc.version)){ cloud.lastServer=doc; cloud.updatedAt=doc.updatedAt; schedulePush(0); }
     else applyServerDoc(doc);
     setSync(cloud.pin?'ok':'readonly');
   }catch(e){ cloud.available=false; setSync('offline'); }
@@ -1967,12 +1969,12 @@ function setRestricted(on){
 }
 function schedulePush(ms=700){ clearTimeout(cloud.timer); cloud.timer=setTimeout(pushNow, ms); }
 async function pushNow(){
-  if(!cloud.available || !cloud.pin || !cloud.dirty) return;
+  if(!cloud.available || !cloud.pin || !cloud.dirty || cloud.restricted) return;   // con la vista pública jamás se sube nada
   if(cloud.inflight){ cloud.again=true; return; }
   cloud.inflight=true; setSync('saving');
   const snapshot=JSON.parse(JSON.stringify(DB));
   try{
-    const r=await api('PUT',{body:{data:snapshot, public:buildPublic(), baseVersion:cloud.version, device:cloud.device}});
+    const r=await api('PUT',{body:{data:snapshot, public:buildPublic(), baseVersion:cloud.version, device:cloud.device, allowEmpty:!!cloud.allowEmpty}});
     if(r.status===401){ cloud.pin=''; saveCloudMeta(); setSync('readonly'); toast('🔑 El PIN guardado ya no es válido. Ingrésalo de nuevo.',null,true); askPinForChange(); return; }
     if(r.status===409){
       const cur=await r.json(); cloud.again=false;
@@ -1989,6 +1991,11 @@ async function pushNow(){
       return;
     }
     if(r.status===503){ setSync('nocloud'); toast('⚠️ Falta configurar el PIN o la base de datos en Vercel.',null,true); return; }
+    if(r.status===422){  // el servidor se negó a borrar los pagos guardados
+      cloud.dirty=false; saveCloudMeta(); await cloudInit();
+      toast('🛡️ Se evitó reemplazar los datos de la nube por una versión sin pagos. Se recargaron los datos guardados.',null,true); return;
+    }
+    cloud.allowEmpty=false;
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
     cloud.version=j.version; cloud.updatedAt=j.updatedAt; cloud.lastServer={data:snapshot, version:j.version, updatedAt:j.updatedAt};
@@ -2012,6 +2019,31 @@ async function cloudPoll(){
     if(cloud.state==='offline'||cloud.state==='connecting') setSync(cloud.pin?'ok':(cloud.lastServer?'readonly':'empty'));
   }catch{ setSync('offline'); }
 }
+/* ---- Versiones anteriores (la nube guarda las últimas 30) ---- */
+async function showVersions(){
+  $('#histTitle').textContent='🕘 Versiones anteriores en la nube';
+  $('#histBody').innerHTML='<div class="empty">Cargando…</div>'; $('#histFoot').innerHTML='';
+  $('#dlgHistory').showModal();
+  try{
+    const r=await api('GET',{query:'?history=1'}); if(!r.ok) throw new Error('HTTP '+r.status);
+    const {versions}=await r.json();
+    const cur=`<div class="li" style="border-color:var(--em)"><div class="info"><b>Versión actual · v${cloud.version}</b><span>${DB.members.length} miembros · ${DB.payments.length} pagos · ${DB.expenses.length} gastos</span></div></div>`;
+    $('#histBody').innerHTML=`<p class="small muted" style="margin-top:0">Si se perdieron datos, restaura la última versión que tenga la cantidad correcta de pagos. Restaurar no borra nada: la versión actual también queda guardada en esta lista.</p>
+      <div class="list">${cur}${versions.length?versions.map(v=>`<div class="li"><div class="info"><b>v${v.version} · ${v.updatedAt?new Date(v.updatedAt).toLocaleString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—'}</b>
+        <span>${v.members} miembros · <strong style="color:${v.payments?'var(--em2)':'var(--red)'}">${v.payments} pagos</strong> · ${v.expenses} gastos${v.device?' · '+esc(v.device):''}</span></div>
+        <button class="btn sm gold" data-restore="${v.version}">↩️ Restaurar</button></div>`).join(''):'<div class="empty">Aún no hay versiones anteriores.</div>'}</div>`;
+    $$('#histBody [data-restore]').forEach(b=>b.onclick=()=>restoreVersion(+b.dataset.restore));
+  }catch(e){ $('#histBody').innerHTML='<div class="empty">⚠️ No se pudo cargar el historial. Revisa tu conexión o tu PIN.</div>'; }
+}
+async function restoreVersion(v){
+  if(!confirm(`¿Restaurar la versión v${v}? Los datos actuales se reemplazan en todos los dispositivos (la versión actual queda guardada por si acaso).`)) return;
+  try{
+    const r=await api('PUT',{body:{restoreVersion:v}}); if(!r.ok) throw new Error('HTTP '+r.status);
+    const doc=await r.json(); cloud.dirty=false; applyServerDoc(doc); setSync('ok'); $('#dlgHistory').close();
+    toast(`↩️ Versión v${v} restaurada: ${DB.members.length} miembros y ${DB.payments.length} pagos.`);
+  }catch(e){ toast('❌ No se pudo restaurar: '+esc(e.message),null,true); }
+}
+
 /* ---- PIN ---- */
 let pinPromise=null, pinResolve=null;
 function requirePin(msg){
